@@ -25,9 +25,18 @@ interface UrgentMessageDao {
     @Delete
     suspend fun deleteMessage(message: UrgentMessage)
 
+    @Query("DELETE FROM urgent_messages WHERE id = :id")
+    suspend fun deleteById(id: Long): Int
+
+    @Query("DELETE FROM urgent_messages WHERE isRead = 1")
+    suspend fun deleteReadMessages(): Int
+
     @Query("DELETE FROM urgent_messages WHERE timestamp < :cutoffTimestamp")
     suspend fun deleteOlderThan(cutoffTimestamp: Long): Int
 
     @Query("DELETE FROM urgent_messages")
     suspend fun deleteAll(): Int
+
+    @Query("SELECT COUNT(*) FROM urgent_messages")
+    suspend fun getMessageCount(): Int
 }

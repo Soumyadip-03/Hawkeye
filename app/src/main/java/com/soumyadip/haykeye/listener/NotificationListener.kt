@@ -1,5 +1,8 @@
 package com.soumyadip.haykeye.listener
 
+import android.content.ComponentName
+import android.content.Context
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -30,7 +33,22 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        isListenerConnected = true
         Log.d(TAG, "Notification listener connected successfully")
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        isListenerConnected = false
+        Log.w(TAG, "Notification listener disconnected. Requesting system rebind...")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                requestRebind(ComponentName(this, NotificationListener::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to request listener rebind: ${e.message}")
+            }
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -39,7 +57,12 @@ class NotificationListener : NotificationListenerService() {
         val packageName = sbn?.packageName ?: return
         val providerName = SUPPORTED_PACKAGES[packageName] ?: return
 
-        // Route to appropriate parser based on package name
+        val config = configRepository.getConfig()
+        if (!config.isListeningEnabled) {
+            Log.d(TAG, "Haykeye notification listener is paused by Master Switch. Skipping message.")
+            return
+        }
+
         val messages = when (packageName) {
             PACKAGE_WHATSAPP, PACKAGE_WHATSAPP_BUSINESS -> WhatsAppParser.parse(sbn)
             PACKAGE_GMAIL -> GmailParser.parse(sbn)
@@ -53,19 +76,16 @@ class NotificationListener : NotificationListenerService() {
 
         val contentIntent = sbn.notification?.contentIntent
 
-        // Register active notification contentIntent for Priority 1 exact conversation navigation
         if (contentIntent != null) {
             for (msg in messages) {
                 NotificationActionRegistry.registerAction(msg, contentIntent)
             }
         }
 
-        val config = configRepository.getConfig()
         val dao = AppDatabase.getDatabase(applicationContext).urgentMessageDao()
 
         serviceScope.launch {
             for (msg in messages) {
-                // Classify urgency
                 val classification = UrgencyClassifier.classify(msg, config)
 
                 if (classification.isUrgent) {
@@ -113,12 +133,27 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isListenerConnected = false
         serviceScope.cancel()
         NotificationActionRegistry.clear()
     }
 
     companion object {
         private const val TAG = "HaykeyeListener"
+
+        @Volatile
+        var isListenerConnected: Boolean = false
+            private set
+
+        fun requestReconnect(context: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                try {
+                    requestRebind(ComponentName(context, NotificationListener::class.java))
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to request manual rebind: ${e.message}")
+                }
+            }
+        }
 
         private const val PACKAGE_WHATSAPP = "com.whatsapp"
         private const val PACKAGE_WHATSAPP_BUSINESS = "com.whatsapp.w4b"

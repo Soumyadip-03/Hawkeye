@@ -30,7 +30,7 @@ object UrgencyClassifier {
         "সাহায্য করুন",
 
         // Hindi script
-        "आपातकाल",
+        "আপাতকাল",
         "तुरंत मदद चाहिए",
         "अभी फोन करो",
         "मदद चाहिए",
@@ -57,6 +57,42 @@ object UrgencyClassifier {
         message: UrgentMessage,
         config: ClassifierConfig = ClassifierConfig(),
     ): ClassificationResult {
+        // 0. Check Group Noise Control Policy (if message is from a group)
+        if (!message.groupName.isNullOrBlank()) {
+            val groupKey = "${message.provider}|${message.groupName}"
+            val groupPolicy = config.groupNoisePolicies[groupKey]
+                ?: config.groupNoisePolicies[message.groupName]
+                ?: GroupNoisePolicy.MONITOR_NORMALLY
+
+            when (groupPolicy) {
+                GroupNoisePolicy.IGNORE_ENTIRELY -> {
+                    return ClassificationResult(
+                        isUrgent = false,
+                        matchedSignal = null,
+                        matchedReason = "Group '${message.groupName}' is set to Ignore Entirely",
+                    )
+                }
+                GroupNoisePolicy.ALERT_ON_MENTION_ONLY -> {
+                    return if (message.wasMentioned) {
+                        ClassificationResult(
+                            isUrgent = true,
+                            matchedSignal = UrgencySignal.MENTION,
+                            matchedReason = "User mentioned in group '${message.groupName}' (Mention-Only policy)",
+                        )
+                    } else {
+                        ClassificationResult(
+                            isUrgent = false,
+                            matchedSignal = null,
+                            matchedReason = "Skipped non-mention in group '${message.groupName}' (Mention-Only policy)",
+                        )
+                    }
+                }
+                GroupNoisePolicy.MONITOR_NORMALLY -> {
+                    // Proceed to normal classification below
+                }
+            }
+        }
+
         // 1. Check @mention
         if (message.wasMentioned) {
             return ClassificationResult(

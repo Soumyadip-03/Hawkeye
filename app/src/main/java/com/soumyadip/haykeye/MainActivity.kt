@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,7 +35,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.soumyadip.haykeye.alert.AlertPreferences
 import com.soumyadip.haykeye.ui.NotebookScreen
 import com.soumyadip.haykeye.ui.NotebookViewModel
+import com.soumyadip.haykeye.ui.SettingsScreen
 import com.soumyadip.haykeye.ui.theme.HaykeyeTheme
+import com.soumyadip.haykeye.ui.theme.ThemePreferences
+
+enum class Screen {
+    NOTEBOOK,
+    SETTINGS,
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -44,9 +52,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            HaykeyeTheme {
-                val context = LocalContext.current
+            val context = LocalContext.current
+            val themePrefs = remember { ThemePreferences(context) }
+            var currentTheme by remember { mutableStateOf(themePrefs.getTheme()) }
+
+            HaykeyeTheme(appTheme = currentTheme) {
                 val lifecycleOwner = LocalLifecycleOwner.current
+                var currentScreen by remember { mutableStateOf(Screen.NOTEBOOK) }
 
                 var isAccessGranted by remember {
                     mutableStateOf(isNotificationListenerEnabled(context))
@@ -77,6 +89,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val launchRingtonePicker = {
+                    val alertPrefs = AlertPreferences(context)
+                    val currentUri = alertPrefs.getRingtoneUri(context)
+                    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alert Ringtone")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI, alertPrefs.getDefaultRingtoneUri())
+                    }
+                    ringtonePickerLauncher.launch(intent)
+                }
+
                 DisposableEffect(lifecycleOwner) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
@@ -91,35 +116,46 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    NotebookScreen(
-                        isAccessGranted = isAccessGranted,
-                        hasPostNotificationPermission = hasPostNotificationPermission,
-                        onOpenSettings = {
-                            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                            startActivity(intent)
-                        },
-                        onRequestPostNotificationPermission = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                postNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    when (currentScreen) {
+                        Screen.NOTEBOOK -> {
+                            NotebookScreen(
+                                isAccessGranted = isAccessGranted,
+                                hasPostNotificationPermission = hasPostNotificationPermission,
+                                onOpenNotificationAccessSettings = {
+                                    val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                    startActivity(intent)
+                                },
+                                onRequestPostNotificationPermission = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        postNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                },
+                                onOpenSettingsScreen = { currentScreen = Screen.SETTINGS },
+                                viewModel = notebookViewModel,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(innerPadding),
+                            )
+                        }
+                        Screen.SETTINGS -> {
+                            BackHandler {
+                                currentScreen = Screen.NOTEBOOK
                             }
-                        },
-                        onSelectRingtone = {
-                            val alertPrefs = AlertPreferences(context)
-                            val currentUri = alertPrefs.getRingtoneUri(context)
-                            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-                                putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
-                                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alert Ringtone")
-                                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
-                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
-                                putExtra(RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI, alertPrefs.getDefaultRingtoneUri())
-                            }
-                            ringtonePickerLauncher.launch(intent)
-                        },
-                        viewModel = notebookViewModel,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
-                    )
+                            SettingsScreen(
+                                currentTheme = currentTheme,
+                                onThemeChanged = { newTheme ->
+                                    currentTheme = newTheme
+                                    themePrefs.saveTheme(newTheme)
+                                },
+                                onNavigateBack = { currentScreen = Screen.NOTEBOOK },
+                                onSelectRingtone = launchRingtonePicker,
+                                onClearAllMessages = { notebookViewModel.deleteAllMessages() },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(innerPadding),
+                            )
+                        }
+                    }
                 }
             }
         }

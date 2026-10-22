@@ -3,6 +3,7 @@ package com.soumyadip.haykeye.classifier
 import com.soumyadip.haykeye.data.UrgentMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -99,6 +100,112 @@ class UrgencyClassifierTest {
     }
 
     @Test
+    fun testUrgentFollowedByOrdinaryMessageInSameConversation() {
+        // Step 1: Urgent message
+        val msgUrgent = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "urgent please call me",
+            fullText = "urgent please call me",
+            timestamp = 1000L,
+            dedupKey = "WhatsApp||Alex|1000|urgent please call me",
+        )
+        val resultUrgent = UrgencyClassifier.classify(msgUrgent)
+        assertTrue("First message 'urgent' must be classified as urgent", resultUrgent.isUrgent)
+        assertEquals(UrgencySignal.KEYWORD, resultUrgent.matchedSignal)
+
+        // Step 2: Ordinary message from same sender
+        val msgOrdinary = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "Okay, thanks",
+            fullText = "Okay, thanks",
+            timestamp = 2000L,
+            dedupKey = "WhatsApp||Alex|2000|Okay, thanks",
+        )
+        val resultOrdinary = UrgencyClassifier.classify(msgOrdinary)
+        assertFalse("Subsequent ordinary message 'Okay, thanks' must NOT be classified as urgent", resultOrdinary.isUrgent)
+        assertNull("Subsequent ordinary message must have null matchedSignal", resultOrdinary.matchedSignal)
+    }
+
+    @Test
+    fun testUpdatedMessagingStyleNotificationWithUrgentAndOrdinary() {
+        // Simulated MessagingStyle notification buffer containing two messages from Alex
+        val msg1 = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "urgent",
+            fullText = "urgent",
+            timestamp = 1000L,
+            dedupKey = "WhatsApp||Alex|1000|urgent",
+        )
+        val msg2 = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "Okay, thanks",
+            fullText = "Okay, thanks",
+            timestamp = 2000L,
+            dedupKey = "WhatsApp||Alex|2000|Okay, thanks",
+        )
+
+        val buffer = listOf(msg1, msg2)
+
+        val classifications = buffer.map { msg -> msg to UrgencyClassifier.classify(msg) }
+
+        // msg1 ("urgent") is urgent
+        assertTrue(classifications[0].second.isUrgent)
+        // msg2 ("Okay, thanks") is NOT urgent
+        assertFalse(classifications[1].second.isUrgent)
+    }
+
+    @Test
+    fun testSecondUrgentMessageAfterOrdinaryMessage() {
+        val msgOrdinary = UrgentMessage(
+            provider = "Google Messages",
+            senderName = "Contact",
+            preview = "See you tomorrow",
+            fullText = "See you tomorrow",
+            timestamp = 1000L,
+        )
+        val resultOrdinary = UrgencyClassifier.classify(msgOrdinary)
+        assertFalse(resultOrdinary.isUrgent)
+
+        val msgUrgent = UrgentMessage(
+            provider = "Google Messages",
+            senderName = "Contact",
+            preview = "Emergency call me ASAP",
+            fullText = "Emergency call me ASAP",
+            timestamp = 2000L,
+        )
+        val resultUrgent = UrgencyClassifier.classify(msgUrgent)
+        assertTrue("Subsequent urgent message must be classified as urgent", resultUrgent.isUrgent)
+        assertEquals(UrgencySignal.KEYWORD, resultUrgent.matchedSignal)
+    }
+
+    @Test
+    fun testRepeatedNotificationUpdatesDeduplication() {
+        val msg1 = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "urgent meeting",
+            fullText = "urgent meeting",
+            timestamp = 1000L,
+            dedupKey = "WhatsApp||Alex|1000|urgent meeting",
+        )
+
+        val msg2 = UrgentMessage(
+            provider = "WhatsApp",
+            senderName = "Alex",
+            preview = "urgent meeting",
+            fullText = "urgent meeting",
+            timestamp = 1000L,
+            dedupKey = "WhatsApp||Alex|1000|urgent meeting",
+        )
+
+        assertEquals("Reprocessed messages from notification updates must have identical dedupKeys", msg1.dedupKey, msg2.dedupKey)
+    }
+
+    @Test
     fun testAvoidsAccidentalSubstringMatches() {
         // "detergent" contains "urgent"
         val msg1 = UrgentMessage(
@@ -129,7 +236,6 @@ class UrgencyClassifierTest {
             vipSenders = mapOf("WhatsApp" to setOf("Alex")),
         )
 
-        // Alex on WhatsApp -> Urgent
         val msgWhatsApp = UrgentMessage(
             provider = "WhatsApp",
             senderName = "Alex",
@@ -141,7 +247,6 @@ class UrgencyClassifierTest {
         assertTrue(resultWhatsApp.isUrgent)
         assertEquals(UrgencySignal.VIP_SENDER, resultWhatsApp.matchedSignal)
 
-        // Alex on Gmail -> Not urgent (since VIP sender is scoped to WhatsApp)
         val msgGmail = UrgentMessage(
             provider = "Gmail",
             senderName = "Alex",
@@ -190,7 +295,6 @@ class UrgencyClassifierTest {
 
     @Test
     fun testTextHeuristics() {
-        // Multiple exclamation marks
         val msgExclamation = UrgentMessage(
             provider = "WhatsApp",
             senderName = "Friend",
@@ -202,7 +306,6 @@ class UrgencyClassifierTest {
         assertTrue(resultExclamation.isUrgent)
         assertEquals(UrgencySignal.TEXT_HEURISTIC, resultExclamation.matchedSignal)
 
-        // Excessive uppercase text
         val msgCaps = UrgentMessage(
             provider = "Google Messages",
             senderName = "Alert",
@@ -217,7 +320,6 @@ class UrgencyClassifierTest {
 
     @Test
     fun testSubjectlessGmailMessages() {
-        // Urgent subjectless Gmail
         val urgentSubjectless = UrgentMessage(
             provider = "Gmail",
             senderName = "Support",
@@ -228,7 +330,6 @@ class UrgencyClassifierTest {
         val urgentResult = UrgencyClassifier.classify(urgentSubjectless)
         assertTrue("Subjectless email with ASAP should be classified as urgent", urgentResult.isUrgent)
 
-        // Ordinary subjectless Gmail
         val ordinarySubjectless = UrgentMessage(
             provider = "Gmail",
             senderName = "Newsletter",

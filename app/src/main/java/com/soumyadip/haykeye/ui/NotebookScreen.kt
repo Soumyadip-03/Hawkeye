@@ -19,13 +19,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.soumyadip.haykeye.classifier.ClassifierConfigRepository
 import com.soumyadip.haykeye.data.UrgentMessage
 import com.soumyadip.haykeye.navigation.MessageLauncher
 import com.soumyadip.haykeye.ui.theme.StatusGreen
@@ -68,17 +73,58 @@ enum class ProviderTab(val displayName: String) {
 fun NotebookScreen(
     isAccessGranted: Boolean,
     hasPostNotificationPermission: Boolean,
-    onOpenSettings: () -> Unit,
+    onOpenNotificationAccessSettings: () -> Unit,
     onRequestPostNotificationPermission: () -> Unit,
-    onSelectRingtone: () -> Unit,
+    onOpenSettingsScreen: () -> Unit,
     viewModel: NotebookViewModel,
     modifier: Modifier = Modifier,
 ) {
-    val allMessages by viewModel.messages.collectAsState()
-    var selectedTab by remember { mutableStateOf(ProviderTab.ALL) }
+    val context = LocalContext.current
+    val configRepo = remember { ClassifierConfigRepository(context) }
+    var config by remember { mutableStateOf(configRepo.getConfig()) }
 
-    val filteredMessages = remember(allMessages, selectedTab) {
-        allMessages.filter { selectedTab.matches(it.provider) }
+    val allMessages by viewModel.messages.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    var selectedTab by remember { mutableStateOf(ProviderTab.ALL) }
+    var showClearReadDialog by remember { mutableStateOf(false) }
+
+    val filteredMessages = remember(allMessages, selectedTab, searchQuery) {
+        allMessages.filter { msg ->
+            val matchesTab = selectedTab.matches(msg.provider)
+            val matchesSearch = if (searchQuery.isBlank()) {
+                true
+            } else {
+                val q = searchQuery.trim().lowercase()
+                msg.senderName.lowercase().contains(q) ||
+                        (msg.groupName?.lowercase()?.contains(q) == true) ||
+                        msg.preview.lowercase().contains(q) ||
+                        msg.fullText.lowercase().contains(q)
+            }
+            matchesTab && matchesSearch
+        }
+    }
+
+    if (showClearReadDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearReadDialog = false },
+            title = { Text("Clear All Read Messages?") },
+            text = { Text("This will permanently remove all read messages from your notebook.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearReadMessages()
+                        showClearReadDialog = false
+                    },
+                ) {
+                    Text("Clear Read", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearReadDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 
     Column(
@@ -88,13 +134,39 @@ fun NotebookScreen(
     ) {
         HeaderBar(
             isAccessGranted = isAccessGranted,
+            isListeningEnabled = config.isListeningEnabled,
             hasPostNotificationPermission = hasPostNotificationPermission,
-            onOpenSettings = onOpenSettings,
+            onOpenNotificationAccessSettings = onOpenNotificationAccessSettings,
             onRequestPostNotificationPermission = onRequestPostNotificationPermission,
-            onSelectRingtone = onSelectRingtone,
+            onOpenSettingsScreen = onOpenSettingsScreen,
+            onClearReadClicked = { showClearReadDialog = true },
+            onToggleListeningEnabled = {
+                val updated = config.copy(isListeningEnabled = !config.isListeningEnabled)
+                config = updated
+                configRepo.saveConfig(updated)
+            },
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Search Bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { viewModel.updateSearchQuery(it) },
+            placeholder = { Text("Search sender, group, text...") },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                        Text("✖", fontSize = 12.sp)
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         ProviderTabRow(
             selectedTab = selectedTab,
@@ -106,8 +178,9 @@ fun NotebookScreen(
         if (filteredMessages.isEmpty()) {
             EmptyState(
                 selectedTab = selectedTab,
+                searchQuery = searchQuery,
                 isAccessGranted = isAccessGranted,
-                onOpenSettings = onOpenSettings,
+                onOpenSettings = onOpenNotificationAccessSettings,
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -119,7 +192,11 @@ fun NotebookScreen(
                     items = filteredMessages,
                     key = { msg -> msg.id },
                 ) { message ->
-                    MessageCard(message = message)
+                    MessageCard(
+                        message = message,
+                        onToggleRead = { viewModel.toggleReadStatus(message) },
+                        onDelete = { viewModel.deleteMessage(message) },
+                    )
                 }
             }
         }
@@ -158,6 +235,7 @@ private fun ProviderTabRow(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                         color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }
@@ -168,10 +246,13 @@ private fun ProviderTabRow(
 @Composable
 private fun HeaderBar(
     isAccessGranted: Boolean,
+    isListeningEnabled: Boolean,
     hasPostNotificationPermission: Boolean,
-    onOpenSettings: () -> Unit,
+    onOpenNotificationAccessSettings: () -> Unit,
     onRequestPostNotificationPermission: () -> Unit,
-    onSelectRingtone: () -> Unit,
+    onOpenSettingsScreen: () -> Unit,
+    onClearReadClicked: () -> Unit,
+    onToggleListeningEnabled: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -181,41 +262,69 @@ private fun HeaderBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            Column(
+                modifier = Modifier.weight(1f, fill = false),
+            ) {
                 Text(
                     text = "Haykeye",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.ExtraBold,
                     color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
                 )
                 Text(
-                    text = "Local Messages Notebook",
+                    text = "Encrypted Local Notebook",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    onClick = onSelectRingtone,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onClearReadClicked,
+                    modifier = Modifier.size(36.dp),
                 ) {
-                    Text(text = "🔔 Sound", style = MaterialTheme.typography.labelSmall)
+                    Text(text = "🧹", fontSize = 16.sp)
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onOpenSettingsScreen,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Text(text = "⚙️", fontSize = 16.sp)
+                }
+
+                val statusText = when {
+                    !isAccessGranted -> "Off"
+                    !isListeningEnabled -> "Paused"
+                    else -> "Active"
+                }
+
+                val statusColor = when {
+                    !isAccessGranted || !isListeningEnabled -> StatusWarning
+                    else -> StatusGreen
+                }
 
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = if (isAccessGranted) {
-                        StatusGreen.copy(alpha = 0.15f)
-                    } else {
-                        StatusWarning.copy(alpha = 0.15f)
-                    },
+                    color = statusColor.copy(alpha = 0.15f),
                     border = BorderStroke(
                         1.dp,
-                        if (isAccessGranted) StatusGreen.copy(alpha = 0.4f) else StatusWarning.copy(alpha = 0.4f),
+                        statusColor.copy(alpha = 0.4f),
                     ),
+                    modifier = Modifier.clickable {
+                        if (!isAccessGranted) {
+                            onOpenNotificationAccessSettings()
+                        } else {
+                            onToggleListeningEnabled()
+                        }
+                    },
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -225,16 +334,17 @@ private fun HeaderBar(
                             modifier = Modifier
                                 .size(8.dp)
                                 .background(
-                                    color = if (isAccessGranted) StatusGreen else StatusWarning,
+                                    color = statusColor,
                                     shape = CircleShape,
                                 ),
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isAccessGranted) "Active" else "Access Off",
+                            text = statusText,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (isAccessGranted) StatusGreen else StatusWarning,
+                            color = statusColor,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
                         )
                     }
                 }
@@ -257,9 +367,11 @@ private fun HeaderBar(
                         text = "Enable permission to capture messages",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = onOpenSettings,
+                        onClick = onOpenNotificationAccessSettings,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                     ) {
                         Text(text = "Enable", style = MaterialTheme.typography.labelMedium)
@@ -284,7 +396,9 @@ private fun HeaderBar(
                         text = "Notification permission needed for alerts",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = onRequestPostNotificationPermission,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -300,6 +414,8 @@ private fun HeaderBar(
 @Composable
 private fun MessageCard(
     message: UrgentMessage,
+    onToggleRead: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -311,9 +427,9 @@ private fun MessageCard(
             .clickable { isExpanded = !isExpanded },
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = if (message.isRead) MaterialTheme.colorScheme.surface.copy(alpha = 0.7f) else MaterialTheme.colorScheme.surface,
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, if (message.isRead) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primaryContainer),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -323,24 +439,63 @@ private fun MessageCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false),
                 ) {
-                    Text(
-                        text = message.provider,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Text(
+                            text = message.provider,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+
+                    if (!message.isRead) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape),
+                        )
+                    }
                 }
 
-                Text(
-                    text = formatTimestamp(message.timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = formatTimestamp(message.timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    TextButton(
+                        onClick = onToggleRead,
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            text = if (message.isRead) "Unread" else "Read",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Text(
+                            text = "🗑️",
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -380,7 +535,6 @@ private fun MessageCard(
                 )
             }
 
-            // Phase 10: Explicit button to open the target provider app
             Spacer(modifier = Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -407,13 +561,15 @@ private fun MessageCard(
 @Composable
 private fun EmptyState(
     selectedTab: ProviderTab,
+    searchQuery: String,
     isAccessGranted: Boolean,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val messageText = when {
+        searchQuery.isNotBlank() -> "No messages found matching '$searchQuery'."
         !isAccessGranted -> "Notification Access is required so Haykeye can receive incoming messages."
-        selectedTab == ProviderTab.ALL -> "Haykeye is actively listening. Incoming messages from supported apps will appear here."
+        selectedTab == ProviderTab.ALL -> "Haykeye is actively listening. Incoming urgent messages will appear here."
         selectedTab == ProviderTab.WHATSAPP -> "No WhatsApp or WhatsApp Business messages captured yet."
         selectedTab == ProviderTab.GMAIL -> "No Gmail messages captured yet."
         selectedTab == ProviderTab.MESSAGES -> "No Google Messages captured yet."
@@ -433,14 +589,14 @@ private fun EmptyState(
             modifier = Modifier.size(72.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Text(text = "📬", fontSize = 32.sp)
+                Text(text = if (searchQuery.isNotBlank()) "🔍" else "📬", fontSize = 32.sp)
             }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = if (selectedTab == ProviderTab.ALL) "No Messages Captured Yet" else "No ${selectedTab.displayName} Messages",
+            text = if (searchQuery.isNotBlank()) "No Matching Search Results" else if (selectedTab == ProviderTab.ALL) "No Messages Captured Yet" else "No ${selectedTab.displayName} Messages",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,

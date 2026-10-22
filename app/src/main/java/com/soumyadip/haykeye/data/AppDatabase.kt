@@ -6,6 +6,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.soumyadip.haykeye.security.DatabaseKeyManager
+import com.soumyadip.haykeye.security.DatabaseMigrator
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Database(entities = [UrgentMessage::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
@@ -13,6 +16,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun urgentMessageDao(): UrgentMessageDao
 
     companion object {
+        const val DB_NAME = "haykeye_database"
+
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE urgent_messages ADD COLUMN dedupKey TEXT NOT NULL DEFAULT ''")
@@ -34,13 +39,28 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
+                val appContext = context.applicationContext
+
+                // 1. Get or generate encrypted 256-bit database passphrase from Keystore
+                val keyManager = DatabaseKeyManager(appContext)
+                val passphrase = keyManager.getOrCreatePassphrase()
+
+                // 2. Safely migrate existing plaintext database if present
+                if (DatabaseMigrator.isDatabasePlaintext(appContext, DB_NAME)) {
+                    DatabaseMigrator.migratePlaintextToEncrypted(appContext, DB_NAME, passphrase)
+                }
+
+                // 3. Build Room database with SQLCipher SupportOpenHelperFactory
+                val factory = SupportOpenHelperFactory(passphrase)
                 val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                    appContext,
                     AppDatabase::class.java,
-                    "haykeye_database",
+                    DB_NAME,
                 )
+                    .openHelperFactory(factory)
                     .addMigrations(MIGRATION_1_2)
                     .build()
+
                 INSTANCE = instance
                 instance
             }
